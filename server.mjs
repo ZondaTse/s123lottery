@@ -16,7 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ─────────────────────────────────────────────
 // 配置（可在此修改，或通过环境变量覆盖）
 // ─────────────────────────────────────────────
-const PORT            = process.env.PORT        || 3000;
+const PORT            = process.env.PORT        || 3003;
 const DB_PATH         = process.env.DB_PATH     || path.join(__dirname, 'lottery.db');
 const KM_APPKEY       = process.env.KM_APPKEY   || '25795669';
 const KM_SECRET       = process.env.KM_SECRET   || '';   // 填入快麦 secret

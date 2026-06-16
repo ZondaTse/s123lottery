@@ -8,7 +8,7 @@ module.exports = {
     watch: false,
     env: {
       NODE_ENV: 'production',
-      PORT: 3000,
+      PORT: 3003,
       DB_PATH: '/root/s123/lottery.db',
       KM_APPKEY: '25795669',
       KM_SECRET:  'c8a3cfaef38b4efd814eae9d2f2260b9',
