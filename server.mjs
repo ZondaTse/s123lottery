@@ -175,11 +175,20 @@ async function fetchKuaimaiWindow(startTime, endTime) {
       const payMs = t.payTime ? Number(t.payTime) : 0;
       if (!payMs || payMs < EVENT_START_MS || payMs > EVENT_END_MS) { skipped++; continue; }
 
-      // 退款/关闭订单：标记为禁止抽奖（used=-1），已中奖的不覆盖
+      // 订单状态过滤：只有已发货/交易完成才允许入库参与抽奖
       const tradeStatus = String(t.tradeStatus || '');
       const isRefunded = tradeStatus === 'TRADE_CLOSED' || tradeStatus === 'TRADE_CLOSED_BY_TAOBAO';
+      const isAllowed = tradeStatus === 'SELLER_SEND_GOODS' ||
+                        tradeStatus === 'SELLER_CONSIGNED_PART' ||
+                        tradeStatus === 'FINISHED';
       if (isRefunded) {
+        // 退款/关闭：标记为禁止抽奖（used=-1），已中奖的不覆盖
         db.prepare(`UPDATE orders SET used=-1 WHERE code=? AND used=0`).run(tid);
+        skipped++;
+        continue;
+      }
+      if (!isAllowed) {
+        // 未发货等其他状态：跳过，不入库
         skipped++;
         continue;
       }
