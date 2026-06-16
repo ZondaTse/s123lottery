@@ -284,6 +284,17 @@ const server = http.createServer(async (req, res) => {
     db.prepare('UPDATE orders SET used=1, prize=?, draw_time=?, secret=? WHERE code=?')
       .run(prize.name, drawTime, secret, code);
 
+    // 飞书通知
+    const FEISHU_WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/2c33e97a-4e1f-4be9-a3c9-bc8f11a7c8b8';
+    fetch(FEISHU_WEBHOOK, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        msg_type: 'text',
+        content: { text: `🎉 新中奖通知\n订单号：${code}\n奖项：${prize.name}\n时间：${drawTime}` }
+      })
+    }).catch(() => {});
+
     return sendJSON(res, { ok: true, prize: prize.name, drawTime, secret, code });
   }
 
