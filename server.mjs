@@ -293,7 +293,7 @@ const server = http.createServer(async (req, res) => {
         msg_type: 'text',
         content: { text: `🎉 新中奖通知\n订单号：${code}\n奖项：${prize.name}\n时间：${drawTime}` }
       })
-    }).catch(() => {});
+    }).then(r => r.json()).then(j => console.log('飞书通知结果:', JSON.stringify(j))).catch(e => console.error('飞书通知失败:', e.message));
 
     return sendJSON(res, { ok: true, prize: prize.name, drawTime, secret, code });
   }
