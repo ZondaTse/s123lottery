@@ -194,33 +194,41 @@ async function fetchKuaimaiWindow(startTime, endTime) {
   return { fetched, added, dup, skipped, error };
 }
 
+// 防并发：同一时间只允许一个 runSync 在跑
+let syncRunning = false;
 async function runSync() {
+  if (syncRunning) return { ok: false, msg: '同步中，请稍后' };
   if (!KM_APPKEY || !KM_SECRET || !KM_SESSION) return { ok: false, msg: '未配置快麦凭证' };
-  let cursor = cfgGet('sync:cursor');
-  const nowMs = Date.now();
-  const startMs = cursor ? Date.parse(cursor.replace(' ', 'T') + '+08:00') : EVENT_START_MS;
-  const endMs = Math.min(nowMs, EVENT_END_MS);
-  if (startMs >= endMs) return { ok: true, msg: '已是最新', fetched: 0, added: 0 };
+  syncRunning = true;
+  try {
+    let cursor = cfgGet('sync:cursor');
+    const nowMs = Date.now();
+    const startMs = cursor ? Date.parse(cursor.replace(' ', 'T') + '+08:00') : EVENT_START_MS;
+    const endMs = Math.min(nowMs, EVENT_END_MS);
+    if (startMs >= endMs) return { ok: true, msg: '已是最新', fetched: 0, added: 0 };
 
-  const fmt = ms => new Date(ms + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ');
-  // 每次最多同步一天（快麦限制）
-  const segEnd = Math.min(startMs + 24 * 3600000, endMs);
-  const result = await fetchKuaimaiWindow(fmt(startMs), fmt(segEnd));
-  const status = {
-    ok: !result.error,
-    time: nowStamp(),
-    msg: result.error || '',
-    window: fmt(startMs) + ' ~ ' + fmt(segEnd),
-    fetched: result.fetched,
-    added: result.added,
-    dup: result.dup,
-    bad: result.skipped,   // 前端用 s.bad 显示跳过数
-  };
-  if (!result.error) {
-    cfgSet('sync:cursor', fmt(segEnd - 2 * 60000));
-    cfgSet('sync:lastStatus', JSON.stringify(status));
+    const fmt = ms => new Date(ms + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ');
+    // 每次最多同步一天（快麦限制）
+    const segEnd = Math.min(startMs + 24 * 3600000, endMs);
+    const result = await fetchKuaimaiWindow(fmt(startMs), fmt(segEnd));
+    const status = {
+      ok: !result.error,
+      time: nowStamp(),
+      msg: result.error || '',
+      window: fmt(startMs) + ' ~ ' + fmt(segEnd),
+      fetched: result.fetched,
+      added: result.added,
+      dup: result.dup,
+      bad: result.skipped,   // 前端用 s.bad 显示跳过数
+    };
+    if (!result.error) {
+      cfgSet('sync:cursor', fmt(segEnd - 2 * 60000));
+      cfgSet('sync:lastStatus', JSON.stringify(status));
+    }
+    return { ...status, reachedNow: segEnd >= endMs };
+  } finally {
+    syncRunning = false;
   }
-  return { ...status, reachedNow: segEnd >= endMs };
 }
 
 // ─────────────────────────────────────────────
@@ -269,6 +277,9 @@ const server = http.createServer(async (req, res) => {
     const code = String(body.code || '').trim().toUpperCase();
     if (!code) return sendJSON(res, { ok: false, msg: '请输入订单号' });
     if (Date.now() > EVENT_END_MS) return sendJSON(res, { ok: false, msg: '活动已于 2026年12月31日 结束，感谢参与！' });
+
+    // 顾客点击抽奖时，非阻塞触发一次快麦同步（不影响抽奖流程）
+    runSync().catch(e => console.error('抽奖触发同步失败:', e.message));
 
     const order = db.prepare('SELECT * FROM orders WHERE code=?').get(code);
     if (!order) return sendJSON(res, { ok: false, msg: '该订单号不存在，无法参与' });
@@ -441,4 +452,13 @@ server.listen(PORT, () => {
   console.log(`S123 抽奖系统已启动：http://localhost:${PORT}`);
   console.log(`数据库：${DB_PATH}`);
   if (!KM_SECRET || !KM_SESSION) console.warn('⚠ 未配置快麦凭证（KM_SECRET / KM_SESSION），快麦同步不可用');
+
+  // 定时同步：每小时执行一次快麦增量同步（含退款状态更新）
+  setInterval(() => {
+    console.log('定时同步触发...');
+    runSync()
+      .then(r => console.log('定时同步完成:', r.ok ? `新增${r.added}单` : r.msg))
+      .catch(e => console.error('定时同步失败:', e.message));
+  }, 60 * 60 * 1000);
+  console.log('定时同步已启动，每小时执行一次');
 });
