@@ -411,7 +411,11 @@ const server = http.createServer(async (req, res) => {
     if (!order || !order.used) return sendJSON(res, { ok: false, msg: '凭证无效' });
     if (order.secret !== secret) return sendJSON(res, { ok: false, msg: '防伪码不符' });
     if (order.redeemed) return sendJSON(res, { ok: false, msg: '此凭证已核销过', redeemTime: order.redeem_time, operator: order.operator });
-    db.prepare('UPDATE orders SET redeemed=1, redeem_time=?, operator=? WHERE code=?').run(nowStamp(), operator, code);
+    const redeemTime = nowStamp();
+    db.prepare('UPDATE orders SET redeemed=1, redeem_time=?, operator=? WHERE code=?').run(redeemTime, operator, code);
+    // 飞书通知
+    const FEISHU_WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/2c33e97a-4e1f-4be9-a3c9-bc8f11a7c8b8';
+    fetch(FEISHU_WEBHOOK, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ msg_type: 'text', content: { text: `✅ 兑奖通知\n订单号：${code}\n奖项：${order.prize}\n核销人：${operator}\n时间：${redeemTime}` } }) }).catch(() => {});
     return sendJSON(res, { ok: true, prize: order.prize, code });
   }
 
