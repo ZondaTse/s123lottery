@@ -286,9 +286,11 @@
 
         <hr style="border:0;border-top:1px solid var(--cardline);margin:22px 0;">
         <h2 style="margin-bottom:6px;">快麦订单同步</h2>
-        <p class="ptotal" style="margin:0 0 10px;">每次有顾客点击抽奖时，系统会自动从快麦增量拉取订单（以平台订单号 tid 为抽奖核验号），无需定时器。下方显示最近一次同步情况。</p>
+        <p class="ptotal" style="margin:0 0 10px;">系统每小时自动同步一次快麦订单，顾客点击抽奖时也会触发同步。仅已发货/交易完成的订单入库，退款订单自动标记禁止参与。下方显示最近一次同步情况。</p>
         <div id="syncStatus" class="ptotal" style="margin:0 0 10px;line-height:1.9;">加载中…</div>
         <button class="btnghost" id="syncRefresh" style="padding:9px 16px;">刷新同步状态</button>
+        <button class="btnghost" id="syncNow" style="padding:9px 16px;margin-left:8px;">立即同步</button>
+        <span id="syncNowMsg" style="margin-left:10px;font-size:13px;"></span>
 
         <hr style="border:0;border-top:1px solid var(--cardline);margin:22px 0;">
         <h2 style="margin-bottom:6px;">密码管理</h2>
@@ -787,6 +789,28 @@
     }
   }
   document.getElementById('syncRefresh').addEventListener('click', loadSyncStatus);
+  document.getElementById('syncNow').addEventListener('click', async function(){
+    var btn = this;
+    var msg = document.getElementById('syncNowMsg');
+    btn.disabled = true;
+    msg.style.color = 'var(--txt3)';
+    msg.textContent = '同步中…';
+    try {
+      var res = await api('/api/sync', { key: 'changeme-cron-2026' });
+      if (res.ok) {
+        msg.style.color = 'var(--green)';
+        msg.textContent = '同步完成，新增 ' + (res.added || 0) + ' 单';
+      } else {
+        msg.style.color = 'var(--red)';
+        msg.textContent = res.msg || '同步失败';
+      }
+    } catch(e) {
+      msg.style.color = 'var(--red)';
+      msg.textContent = '请求失败';
+    }
+    btn.disabled = false;
+    loadSyncStatus();
+  });
 
   // ---------- 密码管理 ----------
   // 参数管理密码修改（旧密码验证 → 写 KV config:managepw）
