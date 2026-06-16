@@ -591,7 +591,7 @@
       var range=row.querySelector('.prange'), pnum=row.querySelector('.pnum'),
           qnum=row.querySelector('.qnum'), stock=row.querySelector('.stock');
       stockEls[i]=stock;
-      function setProb(v){ v=Math.max(0,Math.min(100,Math.round(Number(v)||0))); probState[i]=v; range.value=v; pnum.value=v; renderTotal(); }
+      function setProb(v){ v=Math.max(0,Math.min(100,Math.round((Number(v)||0)*100)/100)); probState[i]=v; range.value=v; pnum.value=v; renderTotal(); }
       range.addEventListener('input', function(){ setProb(range.value); });
       pnum.addEventListener('input', function(){ setProb(pnum.value); });
       qnum.addEventListener('input', function(){ var raw=qnum.value.trim(); quotaState[i]= raw===''?null:Math.max(0,Math.floor(Number(raw)||0)); });
