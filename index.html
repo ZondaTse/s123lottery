@@ -565,7 +565,7 @@
 
   function renderTotal(){
     var s=probState.reduce(function(a,v){return a+Number(v||0);},0);
-    if(tot) tot.textContent="概率合计："+Math.round(s)+"%（系统按比例换算，建议合计 100%）";
+    if(tot) tot.textContent="概率合计："+Math.round(s*100)/100+"%（系统按比例换算，建议合计 100%）";
   }
   function stockText(i){
     var q=quotaState[i], won=Number((serverPrizes[i]||{}).won||0);
@@ -582,8 +582,8 @@
       row.innerHTML=
         '<span class="lbl">'+p.short.split(" ")[0]+'</span>'+
         '<span class="slidewrap">'+
-          '<input type="range" class="prange" min="0" max="100" step="1" value="'+prob+'">'+
-          '<input type="number" class="pnum" min="0" max="100" step="1" value="'+prob+'">'+
+          '<input type="range" class="prange" min="0" max="100" step="0.01" value="'+prob+'">'+
+          '<input type="number" class="pnum" min="0" max="100" step="0.01" value="'+prob+'">'+
           '<span style="color:var(--txt3);font-size:13px;">%</span>'+
         '</span>'+
         '<input type="number" class="qnum" min="0" step="1" placeholder="不限" value="'+(quota===null||quota===undefined?'':quota)+'">'+
@@ -879,5 +879,5 @@
   });
 })();
 </script>
-</body>
+<div style="text-align:center; padding:20px 0 30px; font-size:13px; color:rgba(255,255,255,0.4);"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener" style="color:rgba(255,255,255,0.4); text-decoration:none;">粤ICP备2026075037号</a></div></body>
 </html>
