@@ -174,6 +174,16 @@ async function fetchKuaimaiWindow(startTime, endTime) {
       if (!tid) continue;
       const payMs = t.payTime ? Number(t.payTime) : 0;
       if (!payMs || payMs < EVENT_START_MS || payMs > EVENT_END_MS) { skipped++; continue; }
+
+      // 退款/关闭订单：标记为禁止抽奖（used=-1），已中奖的不覆盖
+      const tradeStatus = String(t.tradeStatus || '');
+      const isRefunded = tradeStatus === 'TRADE_CLOSED' || tradeStatus === 'TRADE_CLOSED_BY_TAOBAO';
+      if (isRefunded) {
+        db.prepare(`UPDATE orders SET used=-1 WHERE code=? AND used=0`).run(tid);
+        skipped++;
+        continue;
+      }
+
       const orderTime = new Date(payMs + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ');
       const r = insertOrder.run({ code: tid, platform: String(t.source || ''), shop: String(t.userId || ''), order_time: orderTime });
       if (r.changes > 0) added++; else dup++;
@@ -262,6 +272,7 @@ const server = http.createServer(async (req, res) => {
 
     const order = db.prepare('SELECT * FROM orders WHERE code=?').get(code);
     if (!order) return sendJSON(res, { ok: false, msg: '该订单号不存在，无法参与' });
+    if (order.used === -1) return sendJSON(res, { ok: false, msg: '该订单已退款，无法参与抽奖' });
     if (order.used) {
       // 已抽过，返回中奖记录
       return sendJSON(res, { ok: true, already: true, prize: order.prize, drawTime: order.draw_time, secret: order.secret, redeemed: !!order.redeemed, redeemTime: order.redeem_time || "" });
