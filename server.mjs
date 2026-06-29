@@ -22,6 +22,7 @@ const KM_APPKEY       = process.env.KM_APPKEY   || '25795669';
 const KM_SECRET       = process.env.KM_SECRET   || '';   // 填入快麦 secret
 const KM_SESSION      = process.env.KM_SESSION  || '';   // 填入快麦 session
 const KM_GATEWAY      = 'https://gw.superboss.cc/router';
+const KM_REFRESH_TOKEN = process.env.KM_REFRESH_TOKEN || '0d09d9ae9d4e4a7ab499d8f2e988a002';
 
 const DEFAULT_MANAGE_PW = '123123';
 const DEFAULT_REDEEM_PW = 'kefu123';
@@ -173,22 +174,17 @@ async function fetchKuaimaiWindow(startTime, endTime) {
       const tid = t && t.tid ? String(t.tid).trim() : '';
       if (!tid) continue;
       const payMs = t.payTime ? Number(t.payTime) : 0;
-      if (!payMs || payMs < EVENT_START_MS || payMs > EVENT_END_MS) { skipped++; continue; }
+      if (!payMs) { skipped++; continue; }
 
-      // 订单状态过滤：只有已发货/交易完成才允许入库参与抽奖
+      // 状态过滤：黑名单制——仅关闭订单踢出，其余全部允许入库
+      // 快麦 API 返回字段: tradeStatus(旧版) 或 unifiedStatus='CLOSED'(新版)
       const tradeStatus = String(t.tradeStatus || '');
-      const isRefunded = tradeStatus === 'TRADE_CLOSED' || tradeStatus === 'TRADE_CLOSED_BY_TAOBAO';
-      const isAllowed = tradeStatus === 'SELLER_SEND_GOODS' ||
-                        tradeStatus === 'SELLER_CONSIGNED_PART' ||
-                        tradeStatus === 'FINISHED';
-      if (isRefunded) {
-        // 退款/关闭：标记为禁止抽奖（used=-1），已中奖的不覆盖
+      const unifiedStatus = String(t.unifiedStatus || '');
+      const isClosed = tradeStatus === 'TRADE_CLOSED' || tradeStatus === 'TRADE_CLOSED_BY_TAOBAO'
+        || unifiedStatus === 'CLOSED';
+      if (isClosed) {
+        // 关闭/退款：标记为禁止抽奖（used=-1），已中奖的不覆盖
         db.prepare(`UPDATE orders SET used=-1 WHERE code=? AND used=0`).run(tid);
-        skipped++;
-        continue;
-      }
-      if (!isAllowed) {
-        // 未发货等其他状态：跳过，不入库
         skipped++;
         continue;
       }
@@ -237,6 +233,32 @@ async function runSync() {
     return { ...status, reachedNow: segEnd >= endMs };
   } finally {
     syncRunning = false;
+  }
+}
+
+// 每小时核对过去 15 天订单状态，将关闭订单踢出
+let recheckRunning = false;
+async function runRecheck() {
+  if (recheckRunning) return { ok: false, msg: '核对中，请稍后' };
+  if (!KM_APPKEY || !KM_SECRET || !KM_SESSION) return { ok: false, msg: '未配置快麦凭证' };
+  recheckRunning = true;
+  let totalClosed = 0, totalAdded = 0, error = '';
+  try {
+    const nowMs = Date.now();
+    const fmt = ms => new Date(ms + 8 * 3600000).toISOString().slice(0, 19).replace('T', ' ');
+    const rangeStart = nowMs - 15 * 24 * 3600 * 1000;
+    // 按天分段查询（快麦限制每次最多 3 天，保守用 1 天）
+    for (let seg = rangeStart; seg < nowMs; seg += 24 * 3600 * 1000) {
+      const segEnd = Math.min(seg + 24 * 3600 * 1000, nowMs);
+      const r = await fetchKuaimaiWindow(fmt(seg), fmt(segEnd));
+      totalClosed += r.skipped; // skipped = 关闭订单（已标记 used=-1）
+      totalAdded  += r.added;
+      if (r.error && !r.error.includes('20002')) { error = r.error; break; }
+    }
+    console.log(`状态核对完成：关闭踢出 ${totalClosed}，补录 ${totalAdded}${error ? '，错误:' + error : ''}`);
+    return { ok: !error, closed: totalClosed, added: totalAdded, error };
+  } finally {
+    recheckRunning = false;
   }
 }
 
@@ -367,7 +389,7 @@ const server = http.createServer(async (req, res) => {
 
     const insertMany = db.transaction((items) => {
       for (const item of items) {
-        const code = String(item.code || '').trim().toUpperCase();
+        const code = String(item.code || item || '').trim().toUpperCase();
         if (!code) { bad++; continue; }
         // 时间过滤
         if (item.orderTime) {
@@ -395,6 +417,16 @@ const server = http.createServer(async (req, res) => {
     if (key !== savedKey && key !== 'changeme-cron-2026') return sendJSON(res, { ok: false, msg: 'key 错误' }, 403);
     const result = await runSync();
     return sendJSON(res, result);
+  }
+
+  // ── /api/orders ────────────────────────────
+  if (pathname === '/api/orders' && req.method === 'POST') {
+    const body = await readBody(req);
+    const pw = String(body.pw || '');
+    const savedPw = cfgGet('config:managepw', DEFAULT_MANAGE_PW);
+    if (pw !== savedPw && pw !== DEFAULT_MANAGE_PW) return sendJSON(res, { ok: false, msg: '密码错误' });
+    const orders = db.prepare('SELECT code, platform, shop, order_time, used, prize, draw_time, secret, redeemed, redeem_time, operator FROM orders ORDER BY order_time DESC, created_at DESC').all();
+    return sendJSON(res, { ok: true, orders });
   }
 
   // ── /api/query ─────────────────────────────
@@ -462,12 +494,66 @@ server.listen(PORT, () => {
   console.log(`数据库：${DB_PATH}`);
   if (!KM_SECRET || !KM_SESSION) console.warn('⚠ 未配置快麦凭证（KM_SECRET / KM_SESSION），快麦同步不可用');
 
-  // 定时同步：每小时执行一次快麦增量同步（含退款状态更新）
-  setInterval(() => {
+  // 定时同步：每小时增量同步 + 核对过去15天状态
+  setInterval(async () => {
     console.log('定时同步触发...');
-    runSync()
-      .then(r => console.log('定时同步完成:', r.ok ? `新增${r.added}单` : r.msg))
-      .catch(e => console.error('定时同步失败:', e.message));
+    try {
+      const r = await runSync();
+      console.log('增量同步完成:', r.ok ? `新增${r.added}单` : r.msg);
+    } catch(e) { console.error('增量同步失败:', e.message); }
+    // 稍等30秒再做核对，避免同时占用快麦 API 并发
+    setTimeout(async () => {
+      console.log('15天状态核对触发...');
+      try {
+        const r = await runRecheck();
+        console.log('状态核对完成:', r.ok ? `关闭踢出${r.closed}，补录${r.added}` : r.error);
+      } catch(e) { console.error('状态核对失败:', e.message); }
+    }, 30 * 1000);
   }, 60 * 60 * 1000);
-  console.log('定时同步已启动，每小时执行一次');
+  console.log('定时同步已启动，每小时执行一次（含15天状态核对）');
+
+  // 快麦 Token 自动刷新（到期前1天刷新，重启安全）
+  const KM_TOKEN_EXPIRY_DEFAULT = Date.parse('2026-07-03T15:40:22+08:00');
+  async function refreshKmToken() {
+    if (!KM_REFRESH_TOKEN || !KM_APPKEY || !KM_SECRET || !KM_SESSION) return;
+    try {
+      const params = {
+        method: 'open.token.refresh', appKey: KM_APPKEY, session: KM_SESSION,
+        timestamp: nowStamp(), format: 'json', version: '1.0', sign_method: 'hmac-sha256',
+        refreshToken: KM_REFRESH_TOKEN
+      };
+      params.sign = kuaimaiSign(params, KM_SECRET);
+      const form = new URLSearchParams();
+      for (const k of Object.keys(params)) form.append(k, params[k]);
+      const r = await fetch(KM_GATEWAY, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' }, body: form.toString() });
+      const d = await r.json();
+      if (d.success) {
+        const newExpiry = Date.now() + (d.session.expiresIn || 2592000) * 1000;
+        cfgSet('km:tokenExpiry', String(newExpiry));
+        const expiryStr = new Date(newExpiry + 8 * 3600000).toISOString().slice(0, 10);
+        console.log(`快麦 Token 刷新成功，新到期：${expiryStr}`);
+        scheduleKmRefresh(); // 按新到期时间重新调度
+      } else {
+        console.warn('快麦 Token 刷新失败:', d.msg);
+        setTimeout(refreshKmToken, 60 * 60 * 1000); // 失败后1小时重试
+      }
+    } catch(e) {
+      console.error('快麦 Token 刷新异常:', e.message);
+      setTimeout(refreshKmToken, 60 * 60 * 1000);
+    }
+  }
+  function scheduleKmRefresh() {
+    const expiryMs = Number(cfgGet('km:tokenExpiry', String(KM_TOKEN_EXPIRY_DEFAULT)));
+    const delay = Math.max(expiryMs - Date.now() - 24 * 60 * 60 * 1000, 0); // 到期前1天
+    const days = Math.round(delay / 86400000);
+    console.log(`快麦 Token 将在 ${days} 天后自动刷新`);
+    // setTimeout 最大支持 ~24.8天 (2^31-1 ms)，超过会溢出变成 1ms，需分段等待
+    const MAX_SAFE_MS = 2000000000; // ~23天
+    if (delay > MAX_SAFE_MS) {
+      setTimeout(scheduleKmRefresh, MAX_SAFE_MS);
+    } else {
+      setTimeout(refreshKmToken, delay);
+    }
+  }
+  scheduleKmRefresh();
 });
